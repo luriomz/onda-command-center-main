@@ -1,5 +1,8 @@
 import { useAuthStore } from '@/stores/authStore';
 
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:5004';
+
 interface RequestOptions extends RequestInit {
   skipAuth?: boolean;
 }
@@ -13,7 +16,7 @@ export async function apiClient(url: string, options: RequestOptions = {}): Prom
     headers.set('Authorization', `Bearer ${accessToken}`);
   }
   if (org) {
-    headers.set('X-Org-Id', org.id);
+    headers.set('X-Organization-ID', org.id);
   }
 
   let response = await fetch(url, { ...fetchOptions, headers });
@@ -31,4 +34,26 @@ export async function apiClient(url: string, options: RequestOptions = {}): Prom
   }
 
   return response;
+}
+
+// ---------------------------------------------------------------------------
+// Typed helpers
+// ---------------------------------------------------------------------------
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export async function apiGet<T>(path: string): Promise<T> {
+  const response = await apiClient(`${API_BASE_URL}${path}`);
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text());
+  }
+  return response.json();
 }
