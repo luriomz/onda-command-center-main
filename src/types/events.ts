@@ -16,6 +16,7 @@ export interface EventListItem {
   venue_id: string;
   capacity: number;
   status?: string;
+  tickets_sold: number;
   ticket_types: EventTicketType[];
 }
 

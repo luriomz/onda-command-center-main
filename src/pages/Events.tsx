@@ -62,10 +62,7 @@ function formatCompactNumber(value: number): string {
 }
 
 function getTicketsSold(event: EventListItem): number {
-  return event.ticket_types.reduce(
-    (sum, ticketType) => sum + ticketType.quantity_sold,
-    0,
-  );
+  return event.tickets_sold;
 }
 
 function getVenueLabel(
