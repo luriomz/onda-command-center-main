@@ -1,6 +1,13 @@
 import { useState, useTransition } from 'react';
 import { motion } from 'framer-motion';
-import { Calendar, ChevronLeft, ChevronRight, ListFilter, RadioTower } from 'lucide-react';
+import {
+  Calendar,
+  CalendarPlus,
+  ChevronLeft,
+  ChevronRight,
+  ListFilter,
+  RadioTower,
+} from 'lucide-react';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { AppShell } from '@/components/layout/AppShell';
 import {
@@ -11,7 +18,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useDashboardOverview } from '@/hooks/useDashboardOverview';
 import { useEvents } from '@/hooks/useEvents';
 import { getEventRoute, isLiveEventStatus } from '@/lib/eventRouting';
 import { EventListItem, EventStatusFilter } from '@/types/events';
@@ -65,13 +71,6 @@ function getTicketsSold(event: EventListItem): number {
   return event.tickets_sold;
 }
 
-function getVenueLabel(
-  eventId: string,
-  venueNameByEventId: Map<string, string | null>,
-): string {
-  return venueNameByEventId.get(eventId) ?? 'Venue unavailable';
-}
-
 function getStatusBadgeClassName(status?: string): string {
   const normalized = (status ?? '').toLowerCase();
 
@@ -107,12 +106,6 @@ const Events = () => {
     page,
     limit: PAGE_SIZE,
     status,
-  });
-  const { data: overview } = useDashboardOverview();
-
-  const venueNameByEventId = new Map<string, string | null>();
-  overview?.upcoming_events.forEach((event) => {
-    venueNameByEventId.set(event.id, event.venue_name);
   });
 
   const liveCount =
@@ -156,6 +149,14 @@ const Events = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate('/events/new')}
+              className="inline-flex h-11 items-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              <CalendarPlus className="h-4 w-4" />
+              Create Event
+            </button>
             <span className="glass-pill text-xs font-medium text-muted-foreground">
               <Calendar className="h-3.5 w-3.5" />
               {data?.meta.total ?? 0} total
@@ -293,7 +294,7 @@ const Events = () => {
                           {formatDateRange(event.start_time, event.end_time)}
                         </TableCell>
                         <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">
-                          {getVenueLabel(event.id, venueNameByEventId)}
+                          {event.venue_name ?? 'Venue TBD'}
                         </TableCell>
                         <TableCell className="text-right font-mono text-sm">
                           <span className="text-foreground">

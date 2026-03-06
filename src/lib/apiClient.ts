@@ -56,6 +56,29 @@ export async function apiGet<T>(path: string): Promise<T> {
   return response.json();
 }
 
+export async function apiPost<TResponse, TBody>(
+  path: string,
+  body: TBody,
+): Promise<TResponse> {
+  const response = await apiClient(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text());
+  }
+
+  if (response.status === 204) {
+    return undefined as TResponse;
+  }
+
+  return response.json();
+}
+
 export async function apiPatch<TResponse, TBody>(
   path: string,
   body: TBody,
@@ -66,6 +89,22 @@ export async function apiPatch<TResponse, TBody>(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text());
+  }
+
+  if (response.status === 204) {
+    return undefined as TResponse;
+  }
+
+  return response.json();
+}
+
+export async function apiDelete<TResponse = void>(path: string): Promise<TResponse> {
+  const response = await apiClient(`${API_BASE_URL}${path}`, {
+    method: 'DELETE',
   });
 
   if (!response.ok) {

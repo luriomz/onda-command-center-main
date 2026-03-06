@@ -2,9 +2,12 @@ import { FormEvent, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  Ban,
   Calendar,
   Clock3,
   Edit3,
+  ExternalLink,
+  Globe2,
   Loader2,
   MapPin,
   RadioTower,
@@ -17,13 +20,16 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { AppShell } from '@/components/layout/AppShell';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import {
   Dialog,
   DialogContent,
@@ -33,24 +39,62 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { useDashboardOverview } from '@/hooks/useDashboardOverview';
 import { useEventDetail } from '@/hooks/useEventDetail';
-import { apiPatch } from '@/lib/apiClient';
+import { apiDelete, apiPatch } from '@/lib/apiClient';
+import {
+  DEFAULT_EVENT_TIMEZONE,
+  EVENT_TIMEZONE_OPTIONS,
+  isValidUrl,
+  localInputToIso,
+  resolvePublicationStatus,
+  toLocalDateTimeValue,
+  trimToUndefined,
+} from '@/lib/eventManagement';
 import { isLiveEventStatus } from '@/lib/eventRouting';
 import { useAuthStore } from '@/stores/authStore';
 import {
   EventDetail as EventDetailModel,
   EventListItem,
+  EventPublicationStatus,
   UpdateEventRequest,
 } from '@/types/events';
 
 interface EditFormState {
   name: string;
+  description: string;
   startTime: string;
   endTime: string;
   capacity: string;
+  status: EventPublicationStatus;
+  timezone: string;
+  coverImageUrl: string;
 }
+
+const MANAGEMENT_STATUS_OPTIONS: Array<{
+  value: EventPublicationStatus;
+  label: string;
+}> = [
+  { value: 'draft', label: 'Draft' },
+  { value: 'published', label: 'Published' },
+  { value: 'cancelled', label: 'Cancelled' },
+];
 
 function formatDateTime(iso: string): string {
   const date = new Date(iso);
@@ -98,37 +142,16 @@ function getStatusBadgeClassName(status?: string): string {
   }
 }
 
-function toLocalDateTimeValue(iso: string): string {
-  const date = new Date(iso);
-
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-
-  const offset = date.getTimezoneOffset();
-  const local = new Date(date.getTime() - offset * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
-function localInputToIso(value: string): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date.toISOString();
-}
-
 function buildEditFormState(event: EventDetailModel): EditFormState {
   return {
     name: event.name,
+    description: event.description ?? '',
     startTime: toLocalDateTimeValue(event.start_time),
     endTime: toLocalDateTimeValue(event.end_time),
-    capacity: String(event.capacity),
+    capacity: event.capacity > 0 ? String(event.capacity) : '',
+    status: resolvePublicationStatus(event.status, event.publication_status),
+    timezone: event.timezone ?? DEFAULT_EVENT_TIMEZONE,
+    coverImageUrl: event.cover_image_url ?? '',
   };
 }
 
@@ -147,21 +170,16 @@ const EventDetail = () => {
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editForm, setEditForm] = useState<EditFormState>({
     name: '',
+    description: '',
     startTime: '',
     endTime: '',
     capacity: '',
+    status: 'draft',
+    timezone: DEFAULT_EVENT_TIMEZONE,
+    coverImageUrl: '',
   });
 
-  const { data: overview } = useDashboardOverview();
-
-  const venueName = useMemo(() => {
-    if (!overview || !eventId) return null;
-    const match = overview.upcoming_events.find((e) => e.id === eventId);
-    return match?.venue_name ?? null;
-  }, [overview, eventId]);
-
-  const canEdit =
-    org?.role === 'admin' || org?.role === 'organizer';
+  const canEdit = org?.role === 'admin' || org?.role === 'organizer';
 
   const soldCount = useMemo(() => {
     if (!event) {
@@ -181,6 +199,16 @@ const EventDetail = () => {
 
     return Math.min(100, (soldCount / event.capacity) * 100);
   }, [event, soldCount]);
+
+  const timezoneOptions = useMemo(() => {
+    const options = new Set<string>(EVENT_TIMEZONE_OPTIONS);
+
+    if (editForm.timezone.trim()) {
+      options.add(editForm.timezone.trim());
+    }
+
+    return Array.from(options);
+  }, [editForm.timezone]);
 
   const updateEventMutation = useMutation({
     mutationFn: async (payload: UpdateEventRequest) => {
@@ -211,6 +239,30 @@ const EventDetail = () => {
     },
   });
 
+  const cancelEventMutation = useMutation({
+    mutationFn: async () => apiDelete(`/events/${eventId}`),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['event-detail'] }),
+        queryClient.invalidateQueries({ queryKey: ['events'] }),
+        queryClient.invalidateQueries({ queryKey: ['org-dashboard'] }),
+      ]);
+
+      toast({
+        title: 'Event cancelled',
+        description: 'The event is now marked as cancelled.',
+      });
+      navigate('/events');
+    },
+    onError: (mutationError: Error) => {
+      toast({
+        title: 'Cancellation failed',
+        description: mutationError.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const openEditDialog = () => {
     if (!event) {
       return;
@@ -227,11 +279,12 @@ const EventDetail = () => {
       return;
     }
 
-    const parsedCapacity = Number.parseInt(editForm.capacity, 10);
-    if (!Number.isFinite(parsedCapacity) || parsedCapacity <= 0) {
+    const name = editForm.name.trim();
+
+    if (!name) {
       toast({
-        title: 'Invalid capacity',
-        description: 'Capacity must be a positive whole number.',
+        title: 'Name required',
+        description: 'Event name cannot be empty.',
         variant: 'destructive',
       });
       return;
@@ -258,11 +311,52 @@ const EventDetail = () => {
       return;
     }
 
+    let capacity: number | undefined;
+    const rawCapacity = editForm.capacity.trim();
+
+    if (rawCapacity) {
+      const parsedCapacity = Number(rawCapacity);
+
+      if (!Number.isInteger(parsedCapacity) || parsedCapacity <= 0) {
+        toast({
+          title: 'Invalid capacity',
+          description: 'Capacity must be a positive whole number.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      capacity = parsedCapacity;
+    } else if (event.capacity > 0) {
+      toast({
+        title: 'Capacity required',
+        description:
+          'Set a positive capacity here. Removing an existing limit is not supported from this dialog yet.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const coverImageUrl = trimToUndefined(editForm.coverImageUrl);
+
+    if (coverImageUrl && !isValidUrl(coverImageUrl)) {
+      toast({
+        title: 'Invalid cover image URL',
+        description: 'Use a full URL starting with http:// or https://.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     updateEventMutation.mutate({
-      name: editForm.name.trim(),
+      name,
+      description: trimToUndefined(editForm.description),
       start_time: nextStartTime,
       end_time: nextEndTime,
-      capacity: parsedCapacity,
+      capacity,
+      status: editForm.status,
+      timezone: trimToUndefined(editForm.timezone) ?? DEFAULT_EVENT_TIMEZONE,
+      cover_image_url: coverImageUrl,
     });
   };
 
@@ -318,7 +412,14 @@ const EventDetail = () => {
                       </span>
                     )}
                   </div>
-                  <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+
+                  {event.description && (
+                    <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
+                      {event.description}
+                    </p>
+                  )}
+
+                  <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
                     <div className="inline-flex items-center gap-2">
                       <Calendar className="h-4 w-4 text-primary" />
                       {formatDateTime(event.start_time)}
@@ -328,8 +429,12 @@ const EventDetail = () => {
                       Ends {formatDateTime(event.end_time)}
                     </div>
                     <div className="inline-flex items-center gap-2">
+                      <Globe2 className="h-4 w-4 text-primary" />
+                      {event.timezone ?? DEFAULT_EVENT_TIMEZONE}
+                    </div>
+                    <div className="inline-flex items-center gap-2">
                       <MapPin className="h-4 w-4 text-primary" />
-                      {venueName ?? '\u2014'}
+                      {event.venue_name ?? 'Venue TBD'}
                     </div>
                   </div>
                 </div>
@@ -346,6 +451,51 @@ const EventDetail = () => {
                     Edit Event
                   </button>
                 )}
+
+                {canEdit && event.publication_status !== 'cancelled' && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex h-11 items-center gap-2 rounded-full border border-red-400/20 bg-red-400/10 px-5 text-sm font-semibold text-red-200 transition-colors hover:bg-red-400/15"
+                      >
+                        <Ban className="h-4 w-4" />
+                        Cancel Event
+                      </button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent className="border-white/[0.08] bg-card/95 text-foreground backdrop-blur-xl">
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Cancel this event?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This uses the dashboard cancel flow and marks the event
+                          as cancelled. The current detail view will close after
+                          the request succeeds.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel
+                          className="border-white/[0.08] bg-white/[0.03] text-foreground hover:bg-white/[0.06]"
+                          disabled={cancelEventMutation.isPending}
+                        >
+                          Keep Event
+                        </AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => cancelEventMutation.mutate()}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          disabled={cancelEventMutation.isPending}
+                        >
+                          {cancelEventMutation.isPending ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Ban className="mr-2 h-4 w-4" />
+                          )}
+                          Cancel Event
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
+
                 {isLiveEventStatus(event.status) && (
                   <button
                     type="button"
@@ -359,6 +509,39 @@ const EventDetail = () => {
               </div>
             </motion.div>
 
+            {event.cover_image_url && (
+              <motion.section
+                className="glass-panel mb-6 overflow-hidden"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.45, delay: 0.16 }}
+              >
+                <div
+                  className="h-44 w-full bg-cover bg-center"
+                  style={{
+                    backgroundImage: `linear-gradient(180deg, rgba(8, 12, 18, 0.08), rgba(8, 12, 18, 0.72)), url(${event.cover_image_url})`,
+                  }}
+                />
+                <div className="flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="data-label">Cover image</p>
+                    <p className="text-sm text-muted-foreground">
+                      This event already has a linked marketing image.
+                    </p>
+                  </div>
+                  <a
+                    href={event.cover_image_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 text-sm font-medium text-primary transition-colors hover:text-primary/80"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    Open image
+                  </a>
+                </div>
+              </motion.section>
+            )}
+
             <motion.div
               className="glass-panel mb-6 p-6"
               initial={{ opacity: 0, y: 12 }}
@@ -370,17 +553,25 @@ const EventDetail = () => {
                   <p className="data-label">Capacity</p>
                   <p className="data-value">
                     {soldCount.toLocaleString()}
-                    <span className="text-muted-foreground">/{event.capacity.toLocaleString()}</span>
+                    {event.capacity > 0 ? (
+                      <span className="text-muted-foreground">
+                        /{event.capacity.toLocaleString()}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">/Uncapped</span>
+                    )}
                   </p>
                 </div>
                 <span className="glass-pill text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  {formatPercent(capacityPercentage)} sold
+                  {event.capacity > 0
+                    ? `${formatPercent(capacityPercentage)} sold`
+                    : 'No limit'}
                 </span>
               </div>
               <div className="h-3 overflow-hidden rounded-full bg-white/[0.05]">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-primary via-primary to-emerald-300 transition-all"
-                  style={{ width: `${capacityPercentage}%` }}
+                  style={{ width: `${event.capacity > 0 ? capacityPercentage : 100}%` }}
                 />
               </div>
             </motion.div>
@@ -581,105 +772,222 @@ const EventDetail = () => {
         )}
 
         <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
-          <DialogContent className="border-white/[0.08] bg-card/95 text-foreground backdrop-blur-xl">
+          <DialogContent className="max-h-[90vh] overflow-y-auto border-white/[0.08] bg-card/95 text-foreground backdrop-blur-xl sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>Edit Event</DialogTitle>
               <DialogDescription>
-                Update the core scheduling and capacity details exposed by the
-                dashboard API.
+                Update scheduling, publishing, and presentation fields exposed by
+                the dashboard API.
               </DialogDescription>
             </DialogHeader>
 
-            <form className="space-y-4" onSubmit={submitEdit}>
-              <div className="space-y-2">
-                <label
-                  htmlFor="event-name"
-                  className="text-sm font-medium text-foreground"
-                >
-                  Event Name
-                </label>
-                <Input
-                  id="event-name"
-                  value={editForm.name}
-                  onChange={(inputEvent) =>
-                    setEditForm((current) => ({
-                      ...current,
-                      name: inputEvent.target.value,
-                    }))
-                  }
-                  className="border-white/[0.08] bg-white/[0.03]"
-                  required
-                />
-              </div>
+            <form className="space-y-6" onSubmit={submitEdit}>
+              <div className="grid gap-6 lg:grid-cols-[1.2fr_0.9fr]">
+                <section className="space-y-4">
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="event-name"
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Event Name
+                    </label>
+                    <Input
+                      id="event-name"
+                      value={editForm.name}
+                      onChange={(inputEvent) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          name: inputEvent.target.value,
+                        }))
+                      }
+                      className="border-white/[0.08] bg-white/[0.03]"
+                      required
+                    />
+                  </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <label
-                    htmlFor="event-start"
-                    className="text-sm font-medium text-foreground"
-                  >
-                    Start Time
-                  </label>
-                  <Input
-                    id="event-start"
-                    type="datetime-local"
-                    value={editForm.startTime}
-                    onChange={(inputEvent) =>
-                      setEditForm((current) => ({
-                        ...current,
-                        startTime: inputEvent.target.value,
-                      }))
-                    }
-                    className="border-white/[0.08] bg-white/[0.03]"
-                    required
-                  />
-                </div>
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="event-description"
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Description
+                    </label>
+                    <Textarea
+                      id="event-description"
+                      value={editForm.description}
+                      onChange={(inputEvent) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          description: inputEvent.target.value,
+                        }))
+                      }
+                      className="border-white/[0.08] bg-white/[0.03]"
+                    />
+                  </div>
 
-                <div className="space-y-2">
-                  <label
-                    htmlFor="event-end"
-                    className="text-sm font-medium text-foreground"
-                  >
-                    End Time
-                  </label>
-                  <Input
-                    id="event-end"
-                    type="datetime-local"
-                    value={editForm.endTime}
-                    onChange={(inputEvent) =>
-                      setEditForm((current) => ({
-                        ...current,
-                        endTime: inputEvent.target.value,
-                      }))
-                    }
-                    className="border-white/[0.08] bg-white/[0.03]"
-                    required
-                  />
-                </div>
-              </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <label
+                        htmlFor="event-start"
+                        className="text-sm font-medium text-foreground"
+                      >
+                        Start Time
+                      </label>
+                      <Input
+                        id="event-start"
+                        type="datetime-local"
+                        value={editForm.startTime}
+                        onChange={(inputEvent) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            startTime: inputEvent.target.value,
+                          }))
+                        }
+                        className="border-white/[0.08] bg-white/[0.03]"
+                        required
+                      />
+                    </div>
 
-              <div className="space-y-2">
-                <label
-                  htmlFor="event-capacity"
-                  className="text-sm font-medium text-foreground"
-                >
-                  Capacity
-                </label>
-                <Input
-                  id="event-capacity"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={editForm.capacity}
-                  onChange={(inputEvent) =>
-                    setEditForm((current) => ({
-                      ...current,
-                      capacity: inputEvent.target.value,
-                    }))
-                  }
-                  className="border-white/[0.08] bg-white/[0.03]"
-                  required
-                />
+                    <div className="space-y-2">
+                      <label
+                        htmlFor="event-end"
+                        className="text-sm font-medium text-foreground"
+                      >
+                        End Time
+                      </label>
+                      <Input
+                        id="event-end"
+                        type="datetime-local"
+                        value={editForm.endTime}
+                        onChange={(inputEvent) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            endTime: inputEvent.target.value,
+                          }))
+                        }
+                        className="border-white/[0.08] bg-white/[0.03]"
+                        required
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                <aside className="space-y-4">
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="event-status"
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Status
+                    </label>
+                    <Select
+                      value={editForm.status}
+                      onValueChange={(value: EventPublicationStatus) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          status: value,
+                        }))
+                      }
+                    >
+                      <SelectTrigger
+                        id="event-status"
+                        className="border-white/[0.08] bg-white/[0.03]"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {MANAGEMENT_STATUS_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="event-timezone"
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Timezone
+                    </label>
+                    <Select
+                      value={editForm.timezone}
+                      onValueChange={(value) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          timezone: value,
+                        }))
+                      }
+                    >
+                      <SelectTrigger
+                        id="event-timezone"
+                        className="border-white/[0.08] bg-white/[0.03]"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {timezoneOptions.map((timezone) => (
+                          <SelectItem key={timezone} value={timezone}>
+                            {timezone}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="event-capacity"
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Capacity
+                    </label>
+                    <Input
+                      id="event-capacity"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={editForm.capacity}
+                      onChange={(inputEvent) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          capacity: inputEvent.target.value,
+                        }))
+                      }
+                      className="border-white/[0.08] bg-white/[0.03]"
+                      placeholder={event?.capacity > 0 ? undefined : 'Optional'}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {event?.capacity > 0
+                        ? 'Use a positive whole number here. Removing an existing cap is not supported yet.'
+                        : 'Leave blank to keep this event uncapped.'}
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="event-cover-image"
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Cover Image URL
+                    </label>
+                    <Input
+                      id="event-cover-image"
+                      type="url"
+                      value={editForm.coverImageUrl}
+                      onChange={(inputEvent) =>
+                        setEditForm((current) => ({
+                          ...current,
+                          coverImageUrl: inputEvent.target.value,
+                        }))
+                      }
+                      className="border-white/[0.08] bg-white/[0.03]"
+                      placeholder="https://..."
+                    />
+                  </div>
+                </aside>
               </div>
 
               <DialogFooter>

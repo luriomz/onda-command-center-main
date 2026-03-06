@@ -1,4 +1,5 @@
 export type EventStatusFilter = 'upcoming' | 'active' | 'past' | 'cancelled';
+export type EventPublicationStatus = 'draft' | 'published' | 'cancelled';
 
 export interface EventTicketType {
   id: string;
@@ -11,11 +12,16 @@ export interface EventTicketType {
 export interface EventListItem {
   id: string;
   name: string;
+  description?: string | null;
   start_time: string;
   end_time: string;
-  venue_id: string;
+  venue_id?: string | null;
+  venue_name?: string | null;
   capacity: number;
+  timezone?: string | null;
   status?: string;
+  publication_status?: EventPublicationStatus | null;
+  cover_image_url?: string | null;
   tickets_sold: number;
   ticket_types: EventTicketType[];
 }
@@ -56,9 +62,26 @@ export interface EventDetail extends EventListItem {
   revenue?: EventRevenueSummary;
 }
 
+export interface CreateEventRequest {
+  name: string;
+  description?: string;
+  start_time: string;
+  end_time: string;
+  venue_id?: string;
+  capacity?: number;
+  timezone?: string;
+  status?: EventPublicationStatus;
+  cover_image_url?: string;
+}
+
 export interface UpdateEventRequest {
   name?: string;
+  description?: string;
   start_time?: string;
   end_time?: string;
+  venue_id?: string;
   capacity?: number;
+  timezone?: string;
+  status?: EventPublicationStatus;
+  cover_image_url?: string;
 }
